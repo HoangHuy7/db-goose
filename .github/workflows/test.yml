@@ -1,39 +1,61 @@
-name: Quick Test Connection
+# Tên của Workflow - Hiển thị trên tab Actions của GitHub
+name: Database Migration (Goose)
 
-on: [push] # Cứ push là chạy
+on:
+  push:
+    # Tự động kích hoạt khi có code mới được push lên nhánh main
+    branches: [ main ]
+    # Chỉ chạy workflow khi có sự thay đổi trong thư mục migrations hoặc chính file workflow này
+    paths:
+      - 'migrations/**'
+      - '.github/workflows/test.yml'
+  # Cho phép kích hoạt chạy workflow thủ công từ giao diện GitHub (nút Run workflow)
+  workflow_dispatch:
+
+# Cấu hình để tránh việc chạy nhiều job migration đồng thời trên cùng một branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true # Nếu có push mới, hủy bỏ lần chạy cũ đang dang dở
 
 jobs:
   check-connection:
+    name: Run Migrations via Tailscale
     runs-on: ubuntu-latest
+    timeout-minutes: 10 # Tránh treo job quá lâu nếu gặp sự cố kết nối mạng
+
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Tailscale
+      # Thiết lập VPN Tailscale để GitHub Runner có thể truy cập vào database trong mạng nội bộ
+      - name: Connect to Tailscale
         uses: tailscale/github-action@v2
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
 
-
-      - name: Setup Go
+      # Cài đặt môi trường Go để sử dụng công cụ Goose
+      - name: Setup Go environment
         uses: actions/setup-go@v5
         with:
-          go-version: '1.21'
+          go-version: '1.21' # Chỉ định phiên bản Go cụ thể
+          cache: true        # Lưu cache cho các dependencies để tăng tốc độ ở các lần chạy sau
 
-      - name: Install Goose
-        run: go install github.com/pressly/goose/v3/cmd/goose@latest
+      # Cài đặt Goose CLI trực tiếp từ mã nguồn
+      - name: Install Goose tool
+        run: go install github.com/pressly/goose/v3/cmd/goose@v3.19.1
 
-      - name: Ping and Migrate
+      # Thực hiện kiểm tra kết nối và chạy các file migration
+      - name: Run Database Migration
         env:
-          # Chuỗi kết nối Postgres của bạn
+          # Các biến môi trường cấu hình cho Goose (lấy từ GitHub Secrets)
           GOOSE_DBSTRING: ${{ secrets.DB_STRING }}
           GOOSE_DRIVER: postgres
         run: |
-          # 1. Test ping
+          # 1. Kiểm tra kết nối mạng đến IP của Database Server
           ping -c 3 100.111.220.6
           
-          # 2. Test Goose status (xem danh sách migration)
+          # 2. Kiểm tra trạng thái các bản migration hiện tại
           goose -dir migrations status
           
-          # 3. Chạy migrate thật
+          # 3. Thực thi nâng cấp database lên phiên bản mới nhất
           goose -dir migrations up
